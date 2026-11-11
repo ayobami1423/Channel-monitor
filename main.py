@@ -85,11 +85,11 @@ async def handle_message(event):
     current_time = datetime.now()
     formatted_time = current_time.strftime("%I:%M %p")  # 12-hour format AM/PM
 
-        if chat_id in channel_history:
+    if chat_id in channel_history:
         prev_time = channel_history[chat_id]["last_time"]
         prev_gap = channel_history[chat_id].get("last_gap")
 
-        # Calculate exact gap based strictly on the minute values (ignoring seconds)
+        # Calculate exact gap based strictly on minute values (ignoring seconds)
         current_gap = (current_time.hour * 60 + current_time.minute) - (
             prev_time.hour * 60 + prev_time.minute
         )
