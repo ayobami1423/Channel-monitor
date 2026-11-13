@@ -44,17 +44,12 @@ CHANNELS = [
     -1003840464649,
 ]
 
-# Exact message template to watch for
-TARGET_MESSAGE = """🚨 ATTENTION! SIGNAL PREPARING 🚨
+# Exact loss message template to watch for
+LOSS_MESSAGE = """❌ LOSS
 
-⏰ Entry opportunity approaching...
-🔍 Waiting for confirmation...
-
-🎁 PROMO CODE: LUX10
-💰 Use code to earn bonus!"""
-
-# Dictionary to store timestamp and gap history per channel
-channel_history = {}
+😔 Not this time...
+💪 Wait for the next signal!
+🎯 Patience and discipline win."""
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
@@ -74,56 +69,33 @@ async def send_bot_notification(text: str):
 async def handle_message(event):
     message_text = event.raw_text.strip()
 
-    # Strictly ignore any message that doesn't match the target format
-    if message_text != TARGET_MESSAGE.strip():
+    # Strictly check if the incoming message matches the loss template
+    if message_text != LOSS_MESSAGE.strip():
         return
 
     chat = await event.get_chat()
-    chat_id = chat.id
-    chat_title = getattr(chat, "title", str(chat_id))
+    chat_title = getattr(chat, "title", str(chat.id))
 
     current_time = datetime.now()
     formatted_time = current_time.strftime("%I:%M %p")  # 12-hour format AM/PM
 
-    if chat_id in channel_history:
-        prev_time = channel_history[chat_id]["last_time"]
-        prev_gap = channel_history[chat_id].get("last_gap")
+    # Construct the loss alert message
+    alert_text = (
+        f"🚨 LOSS ALERT DETECTED! 🚨\n"
+        f"Channel: {chat_title}\n"
+        f"Time: {formatted_time}\n\n"
+        f"❌ LOSS\n"
+        f"😔 Not this time...\n"
+        f"💪 Wait for the next signal!\n"
+        f"🎯 Patience and discipline win."
+    )
 
-        # Calculate exact gap based strictly on minute values (ignoring seconds)
-        current_gap = (current_time.hour * 60 + current_time.minute) - (
-            prev_time.hour * 60 + prev_time.minute
-        )
-
-        # Check if the minute gap occurred twice in a row for this channel
-        if prev_gap is not None and current_gap == prev_gap:
-            alert_text = (
-                f"⚠️ REPEATED INTERVAL DETECTED ⚠️\n"
-                f"Channel: {chat_title}\n"
-                f"Time: {formatted_time}\n"
-                f"Interval Pattern: {current_gap} mins repeated!"
-            )
-            print(alert_text, flush=True)
-            await send_bot_notification(alert_text)
-        else:
-            alert_text = f"[{chat_title}] - New Signal Alert at {formatted_time} | Time gap: {current_gap} mins"
-            print(alert_text, flush=True)
-            await send_bot_notification(alert_text)
-
-        # Update tracking history for this channel
-        channel_history[chat_id] = {
-            "last_time": current_time,
-            "last_gap": current_gap,
-        }
-    else:
-        # First matching message seen in this channel
-        channel_history[chat_id] = {"last_time": current_time, "last_gap": None}
-        init_text = f"[{chat_title}] - First Signal Recorded at {formatted_time} | Tracking initiated."
-        print(init_text, flush=True)
-        await send_bot_notification(init_text)
+    print(alert_text, flush=True)
+    await send_bot_notification(alert_text)
 
 
 async def main():
-    print("Userbot started and listening to channels...", flush=True)
+    print("Userbot started and listening for loss messages...", flush=True)
     await client.start()
     await client.run_until_disconnected()
 
