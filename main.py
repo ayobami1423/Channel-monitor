@@ -44,20 +44,17 @@ CHANNELS = [
     -1003840464649,
 ]
 
-# Exact loss message template to watch for
-LOSS_MESSAGE = """❌ LOSS
-
-😔 Not this time...
-💪 Wait for the next signal!
-🎯 Patience and discipline win."""
-
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
 async def send_bot_notification(text: str):
     """Sends the formatted alert to your private chat via your Telegram Bot"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
     async with httpx.AsyncClient() as http_client:
         try:
             await http_client.post(url, json=payload)
@@ -69,8 +66,18 @@ async def send_bot_notification(text: str):
 async def handle_message(event):
     message_text = event.raw_text.strip()
 
-    # Strictly check if the incoming message matches the loss template
-    if message_text != LOSS_MESSAGE.strip():
+    # Check if the message is a win notification
+    is_mega_win = "🚀 MEGA WIN!" in message_text
+    is_normal_win = "🎉 YOU WON!" in message_text
+
+    if not (is_mega_win or is_normal_win):
+        return
+
+    # Strictly verify that it is Martingale 4 or Martingale 5
+    if (
+        "(WIN (MARTINGALE 4))" not in message_text
+        and "(WIN (MARTINGALE 5))" not in message_text
+    ):
         return
 
     chat = await event.get_chat()
@@ -79,15 +86,22 @@ async def handle_message(event):
     current_time = datetime.now()
     formatted_time = current_time.strftime("%I:%M %p")  # 12-hour format AM/PM
 
-    # Construct the loss alert message
+    # Generate the direct link to the message if the channel has a username or public/private structure
+    message_link = None
+    if chat.username:
+        message_link = f"https://t.me/{chat.username}/{event.id}"
+    else:
+        # For supergroups/channels with IDs like -100xxxxxxxxxx, format the link cleanly
+        clean_id = str(chat.id).replace("-100", "")
+        message_link = f"https://t.me/c/{clean_id}/{event.id}"
+
+    # Construct the alert to send to your private chat with the link included
     alert_text = (
-        f"🚨 LOSS ALERT DETECTED! 🚨\n"
+        f"🚨 TARGET MARTINGALE HIT! 🚨\n"
         f"Channel: {chat_title}\n"
-        f"Time: {formatted_time}\n\n"
-        f"❌ LOSS\n"
-        f"😔 Not this time...\n"
-        f"💪 Wait for the next signal!\n"
-        f"🎯 Patience and discipline win."
+        f"Time: {formatted_time}\n"
+        f"🔗 Message Link: {message_link}\n\n"
+        f"{message_text}"
     )
 
     print(alert_text, flush=True)
@@ -95,7 +109,10 @@ async def handle_message(event):
 
 
 async def main():
-    print("Userbot started and listening for loss messages...", flush=True)
+    print(
+        "Userbot started and listening for Martingale 4 & 5 wins...",
+        flush=True,
+    )
     await client.start()
     await client.run_until_disconnected()
 
