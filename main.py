@@ -25,6 +25,13 @@ CHANNELS = [
     -1003840464649,
 ]
 
+# Exact loss message template to watch for
+LOSS_MESSAGE = """❌ LOSS
+
+😔 Not this time...
+💪 Wait for the next signal!
+🎯 Patience and discipline win."""
+
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -44,47 +51,73 @@ async def send_telegram_message(text: str):
 
 
 async def main():
-    print("Connecting to Telegram to fetch all 100 messages...", flush=True)
+    print("Connecting to Telegram to scan for recent losses...", flush=True)
     await client.start()
     
-    await send_telegram_message("🔍 **Starting history extraction:** Fetching the last 10 messages for all 10 channels (100 messages total)... Please wait.")
+    await send_telegram_message("🔍 **Scanning channels for recent loss messages and extracting their 10-message histories...** Please wait.")
+
+    found_any = False
 
     for channel_id in CHANNELS:
         try:
             entity = await client.get_entity(channel_id)
             chat_title = getattr(entity, "title", str(channel_id))
-            
-            history_lines = [f"📊 **CHANNEL: {chat_title}**\n*(Last 10 Messages)*\n━━━━━━━━━━━━━━━━━━━━"]
-            count = 0
 
-            # Fetch last 10 messages from newest to oldest for this specific channel
-            async for message in client.iter_messages(entity, limit=10):
-                count += 1
-                msg_text = message.raw_text.strip() if message.raw_text else "[Media / Non-text Message]"
-                if len(msg_text) > 70:
-                    msg_text = msg_text[:70] + "..."
+            # Scan the last 50 messages in the channel to find recent loss messages
+            async for message in client.iter_messages(entity, limit=50):
+                msg_text = message.raw_text.strip() if message.raw_text else ""
+                
+                if LOSS_MESSAGE.strip() in msg_text:
+                    found_any = True
+                    
+                    # Generate link for the loss message
+                    if entity.username:
+                        loss_link = f"https://t.me/{entity.username}/{message.id}"
+                    else:
+                        clean_id = str(entity.id).replace("-100", "")
+                        loss_link = f"https://t.me/c/{clean_id}/{message.id}"
 
-                if entity.username:
-                    msg_link = f"https://t.me/{entity.username}/{message.id}"
-                else:
-                    clean_id = str(entity.id).replace("-100", "")
-                    msg_link = f"https://t.me/c/{clean_id}/{message.id}"
+                    # Fetch the 10 messages leading up to this loss message (newest to oldest)
+                    history_lines = []
+                    async for prev_msg in client.iter_messages(entity, limit=10, max_id=message.id):
+                        prev_text = prev_msg.raw_text.strip() if prev_msg.raw_text else "[Media / Non-text Message]"
+                        if len(prev_text) > 70:
+                            prev_text = prev_text[:70] + "..."
 
-                history_lines.append(f"{count}. 🔗 {msg_link}\n   💬 {msg_text}")
+                        if entity.username:
+                            prev_link = f"https://t.me/{entity.username}/{prev_msg.id}"
+                        else:
+                            clean_id = str(entity.id).replace("-100", "")
+                            prev_link = f"https://t.me/c/{clean_id}/{prev_msg.id}"
 
-            # Send this channel's 10 messages as a dedicated report block
-            channel_report = "\n\n".join(history_lines)
-            await send_telegram_message(channel_report)
-            
-            # Short pause between channels to avoid Telegram rate limits
-            await asyncio.sleep(1.5)
+                        history_lines.append(f"🔗 {prev_link}\n💬 {prev_text}")
+
+                    history_text = "\n\n".join(history_lines) if history_lines else "No previous history found."
+
+                    # Compile report for this loss event
+                    report = (
+                        f"🚨 RECENT LOSS FOUND 🚨\n"
+                        f"Channel: {chat_title}\n"
+                        f"🔗 Loss Message Link: {loss_link}\n\n"
+                        f"📋 PREVIOUS 10 MESSAGES (Newest to Oldest):\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{history_text}"
+                    )
+
+                    await send_telegram_message(report)
+                    await asyncio.sleep(1)
+                    
+                    # Optional: limit to the most recent loss per channel so it doesn't spam too many old ones
+                    break 
 
         except Exception as e:
-            error_msg = f"❌ Could not fetch history for channel `{channel_id}`: {e}"
-            await send_telegram_message(error_msg)
+            print(f"Could not scan channel {channel_id}: {e}", flush=True)
 
-    await send_telegram_message("✅ **All 100 messages fetched and sent successfully!**")
-    print("All 100 messages sent to Telegram!", flush=True)
+    if not found_any:
+        await send_telegram_message("ℹ️ No recent loss messages were found in the scanned history of your channels.")
+
+    await send_telegram_message("✅ **History scan complete!**")
+    print("Scan complete!", flush=True)
 
 
 if __name__ == "__main__":
