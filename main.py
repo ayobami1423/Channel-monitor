@@ -44,6 +44,13 @@ CHANNELS = [
     -1003840464649,
 ]
 
+TARGET_MARTINGALES = (
+    "(WIN (MARTINGALE 2))",
+    "(WIN (MARTINGALE 3))",
+    "(WIN (MARTINGALE 4))",
+    "(WIN (MARTINGALE 5))",
+)
+
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
@@ -73,11 +80,8 @@ async def handle_message(event):
     if not (is_mega_win or is_normal_win):
         return
 
-    # Strictly verify that it is Martingale 4 or Martingale 5
-    if (
-        "(WIN (MARTINGALE 4))" not in message_text
-        and "(WIN (MARTINGALE 5))" not in message_text
-    ):
+    # Strictly verify that it is Martingale 2, 3, 4, or 5
+    if not any(tag in message_text for tag in TARGET_MARTINGALES):
         return
 
     chat = await event.get_chat()
@@ -87,7 +91,6 @@ async def handle_message(event):
     formatted_time = current_time.strftime("%I:%M %p")  # 12-hour format AM/PM
 
     # Generate the direct link to the message if the channel has a username or public/private structure
-    message_link = None
     if chat.username:
         message_link = f"https://t.me/{chat.username}/{event.id}"
     else:
@@ -110,7 +113,7 @@ async def handle_message(event):
 
 async def main():
     print(
-        "Userbot started and listening for Martingale 4 & 5 wins...",
+        "Userbot started and listening for Martingale 2, 3, 4 & 5 wins...",
         flush=True,
     )
     await client.start()
