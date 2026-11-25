@@ -1,14 +1,13 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import os
-import re
 from threading import Thread
 from flask import Flask
 import httpx
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# --- 1. DUMMY WEB SERVER TO KEEP CLOUD HOSTING AWAKE ---
+# --- 1. DUMMY WEB SERVER TO KEEP RENDER AWAKE ---
 app = Flask(__name__)
 
 
@@ -50,27 +49,30 @@ CHANNELS = [
     -1003840464649,
 ]
 
-# Stores {"step": int, "link": str} for the previous qualifying Martingale win per channel
-last_martingale_win = {}
+# Core text match (handles optional trailing exclamation mark on bonus line)
+TARGET_CORE = """🚨 ATTENTION! SIGNAL PREPARING 🚨
+
+⏰ Entry opportunity approaching...
+🔍 Waiting for confirmation...
+
+🎁 PROMO CODE: LUX10
+💰 Use code to earn bonus"""
+
+WAT_TZ = timezone(timedelta(hours=1))  # Nigeria time (UTC+1)
+TARGET_MINUTES = 10
+
+# Stores list of {"minute_time": datetime, "link": str} per channel
+preparing_history = {}
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-def extract_qualifying_martingale_step(text: str):
-    """
-    Returns Martingale step (int) if it is MARTINGALE 2 or higher.
-    Returns None for MARTINGALE 1, DIRECT wins, or non-Martingale wins.
-    """
-    upper_text = text.upper()
-    if "(WIN (DIRECT))" in upper_text or "MARTINGALE" not in upper_text:
-        return None
-
-    match = re.search(r"MARTINGALE\s+(\d+)", text, flags=re.IGNORECASE)
-    if match:
-        step = int(match.group(1))
-        if step >= 2:
-            return step
-    return None
+def to_wat_minute(dt: datetime | None) -> datetime:
+    """Converts a datetime to Nigeria time (WAT, UTC+1) floored to the minute."""
+    base = dt or datetime.now(WAT_TZ)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return base.astimezone(WAT_TZ).replace(second=0, microsecond=0)
 
 
 def build_message_link(chat, message_id: int) -> str:
@@ -99,46 +101,52 @@ async def send_bot_notification(text: str):
 @client.on(events.NewMessage(chats=CHANNELS))
 async def handle_message(event):
     message_text = (event.raw_text or "").strip()
+
+    # Ignore every message except SIGNAL PREPARING
+    if TARGET_CORE.strip() not in message_text:
+        return
+
     chat = await event.get_chat()
     chat_id = chat.id
     chat_title = getattr(chat, "title", str(chat_id))
 
-    is_mega_win = "🚀 MEGA WIN!" in message_text
-    is_normal_win = "🎉 YOU WON!" in message_text
-    is_win = is_mega_win or is_normal_win
+    current_minute_dt = to_wat_minute(event.date)
+    current_link = build_message_link(chat, event.id)
 
-    if is_win:
-        step = extract_qualifying_martingale_step(message_text)
+    # Keep only entries from the last 15 minutes (in minutes) for this channel
+    cutoff = current_minute_dt - timedelta(minutes=15)
+    history = [
+        item for item in preparing_history.get(chat_id, [])
+        if item["minute_time"] >= cutoff
+    ]
 
-        if step is not None:
-            current_link = build_message_link(chat, event.id)
-            prev_win = last_martingale_win.get(chat_id)
+    # Check if any earlier SIGNAL PREPARING happened exactly 10 minutes earlier
+    matched_earlier = None
+    for item in history:
+        diff_minutes = int((current_minute_dt - item["minute_time"]).total_seconds() // 60)
+        if diff_minutes == TARGET_MINUTES:
+            matched_earlier = (item, diff_minutes)
+            break
 
-            # Store latest qualifying Martingale win for future comparisons
-            last_martingale_win[chat_id] = {"step": step, "link": current_link}
+    # Save current SIGNAL PREPARING minute timestamp into channel history
+    history.append({"minute_time": current_minute_dt, "link": current_link})
+    preparing_history[chat_id] = history
 
-            if prev_win is not None:
-                current_time = datetime.now()
-                formatted_time = current_time.strftime("%I:%M %p")
+    if matched_earlier is not None:
+        prev_item, gap_mins = matched_earlier
+        formatted_now = datetime.now(WAT_TZ).strftime("%I:%M %p")
 
-                alert_text = (
-                    f"🔥 BACK-TO-BACK MARTINGALE ALERT! 🔥\n"
-                    f"Channel: {chat_title}\n"
-                    f"Time: {formatted_time}\n"
-                    f"Sequence: Martingale {prev_win['step']} → Martingale {step}\n"
-                    f"🔗 1st Win Link: {prev_win['link']}\n"
-                    f"🔗 2nd Win Link: {current_link}\n\n"
-                    f"{message_text}"
-                )
+        alert_text = (
+            f"🎯 10-MINUTE SIGNAL PREPARING HIT! 🎯\n"
+            f"Channel: {chat_title}\n"
+            f"Alert Time: {formatted_now} WAT\n"
+            f"Time Gap: {gap_mins} min\n"
+            f"🔗 1st Signal Link: {prev_item['link']}\n"
+            f"🔗 10-Min Signal Link: {current_link}"
+        )
 
-                print(alert_text, flush=True)
-                await send_bot_notification(alert_text)
-        else:
-            # Direct win or Martingale 1 resets any active streak
-            last_martingale_win[chat_id] = None
-    elif "❌ LOSS" in message_text:
-        # Reset consecutive Martingale tracking after a loss
-        last_martingale_win[chat_id] = None
+        print(alert_text, flush=True)
+        await send_bot_notification(alert_text)
 
 
 async def main():
@@ -149,7 +157,7 @@ async def main():
             "SESSION_STRING is invalid or expired. Generate a new StringSession and redeploy."
         )
     print(
-        "Userbot authorized and listening for consecutive Martingale (2+) wins...",
+        "Userbot authorized: alerting when SIGNAL PREPARING repeats 10 min later (WAT)...",
         flush=True,
     )
     await client.run_until_disconnected()
