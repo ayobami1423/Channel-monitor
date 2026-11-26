@@ -49,30 +49,50 @@ CHANNELS = [
     -1003840464649,
 ]
 
-# Core text match (handles optional trailing exclamation mark on bonus line)
-TARGET_CORE = """🚨 ATTENTION! SIGNAL PREPARING 🚨
+PREPARING_BLOCK = """🚨 ATTENTION! SIGNAL PREPARING 🚨
 
 ⏰ Entry opportunity approaching...
 🔍 Waiting for confirmation...
 
 🎁 PROMO CODE: LUX10
-💰 Use code to earn bonus"""
+💰 Use code to earn bonus!"""
+
+CANCELLED_BLOCK = """❌ SIGNAL CANCELLED
+
+🔄 Analysis continuing...
+⏳ Waiting for new signal..."""
+
+CONFIRMED_HEADER = "✅ SIGNAL CONFIRMED! 🚀"
+CONFIRMED_FOOTER = "⚠️ MAXIMUM 5 MARTINGALES"
 
 WAT_TZ = timezone(timedelta(hours=1))  # Nigeria time (UTC+1)
-TARGET_MINUTES = 10
 
-# Stores list of {"minute_time": datetime, "link": str} per channel
-preparing_history = {}
+# Per-channel state:
+# {"streak": int, "pending_preparing": bool, "last_preparing_link": str | None}
+channel_states = {}
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
-def to_wat_minute(dt: datetime | None) -> datetime:
-    """Converts a datetime to Nigeria time (WAT, UTC+1) floored to the minute."""
-    base = dt or datetime.now(WAT_TZ)
-    if base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
-    return base.astimezone(WAT_TZ).replace(second=0, microsecond=0)
+def get_channel_state(chat_id: int) -> dict:
+    if chat_id not in channel_states:
+        channel_states[chat_id] = {
+            "streak": 0,
+            "pending_preparing": False,
+            "last_preparing_link": None,
+        }
+    return channel_states[chat_id]
+
+
+def classify_message(text: str) -> str | None:
+    """Returns 'preparing', 'confirmed', 'cancelled', or None for any other message."""
+    if PREPARING_BLOCK in text:
+        return "preparing"
+    if CANCELLED_BLOCK in text:
+        return "cancelled"
+    if CONFIRMED_HEADER in text and CONFIRMED_FOOTER in text:
+        return "confirmed"
+    return None
 
 
 def build_message_link(chat, message_id: int) -> str:
@@ -101,52 +121,62 @@ async def send_bot_notification(text: str):
 @client.on(events.NewMessage(chats=CHANNELS))
 async def handle_message(event):
     message_text = (event.raw_text or "").strip()
+    msg_type = classify_message(message_text)
 
-    # Ignore every message except SIGNAL PREPARING
-    if TARGET_CORE.strip() not in message_text:
+    # Ignore every message except PREPARING, CONFIRMED, and CANCELLED
+    if msg_type is None:
         return
 
     chat = await event.get_chat()
     chat_id = chat.id
     chat_title = getattr(chat, "title", str(chat_id))
+    msg_link = build_message_link(chat, event.id)
+    now_wat = datetime.now(WAT_TZ).strftime("%I:%M %p")
+    state = get_channel_state(chat_id)
 
-    current_minute_dt = to_wat_minute(event.date)
-    current_link = build_message_link(chat, event.id)
-
-    # Keep only entries from the last 15 minutes (in minutes) for this channel
-    cutoff = current_minute_dt - timedelta(minutes=15)
-    history = [
-        item for item in preparing_history.get(chat_id, [])
-        if item["minute_time"] >= cutoff
-    ]
-
-    # Check if any earlier SIGNAL PREPARING happened exactly 10 minutes earlier
-    matched_earlier = None
-    for item in history:
-        diff_minutes = int((current_minute_dt - item["minute_time"]).total_seconds() // 60)
-        if diff_minutes == TARGET_MINUTES:
-            matched_earlier = (item, diff_minutes)
-            break
-
-    # Save current SIGNAL PREPARING minute timestamp into channel history
-    history.append({"minute_time": current_minute_dt, "link": current_link})
-    preparing_history[chat_id] = history
-
-    if matched_earlier is not None:
-        prev_item, gap_mins = matched_earlier
-        formatted_now = datetime.now(WAT_TZ).strftime("%I:%M %p")
-
-        alert_text = (
-            f"🎯 10-MINUTE SIGNAL PREPARING HIT! 🎯\n"
-            f"Channel: {chat_title}\n"
-            f"Alert Time: {formatted_now} WAT\n"
-            f"Time Gap: {gap_mins} min\n"
-            f"🔗 1st Signal Link: {prev_item['link']}\n"
-            f"🔗 10-Min Signal Link: {current_link}"
+    if msg_type == "preparing":
+        state["pending_preparing"] = True
+        state["last_preparing_link"] = msg_link
+        print(
+            f"[{chat_title}] SIGNAL PREPARING recorded (Current Streak: {state['streak']})",
+            flush=True,
         )
 
-        print(alert_text, flush=True)
-        await send_bot_notification(alert_text)
+    elif msg_type == "confirmed":
+        if state["pending_preparing"]:
+            state["streak"] += 1
+            state["pending_preparing"] = False
+            prep_link = state["last_preparing_link"]
+            current_streak = state["streak"]
+
+            alert_text = (
+                f"🔥 CONFIRMED STREAK: {current_streak} 🔥\n"
+                f"Channel: {chat_title}\n"
+                f"Time: {now_wat} WAT\n"
+                f"🔗 Preparing Link: {prep_link}\n"
+                f"🔗 Confirmed Link: {msg_link}"
+            )
+            print(alert_text, flush=True)
+            await send_bot_notification(alert_text)
+
+    elif msg_type == "cancelled":
+        if state["pending_preparing"] or state["streak"] > 0:
+            prev_streak = state["streak"]
+            prep_link = state["last_preparing_link"]
+            state["streak"] = 0
+            state["pending_preparing"] = False
+            state["last_preparing_link"] = None
+
+            alert_text = (
+                f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
+                f"Channel: {chat_title}\n"
+                f"Time: {now_wat} WAT\n"
+                f"Previous Streak: {prev_streak} → 0\n"
+                f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
+                f"🔗 Cancelled Link: {msg_link}"
+            )
+            print(alert_text, flush=True)
+            await send_bot_notification(alert_text)
 
 
 async def main():
@@ -157,7 +187,7 @@ async def main():
             "SESSION_STRING is invalid or expired. Generate a new StringSession and redeploy."
         )
     print(
-        "Userbot authorized: alerting when SIGNAL PREPARING repeats 10 min later (WAT)...",
+        "Userbot authorized: tracking PREPARING → CONFIRMED streaks and CANCELLED resets (WAT)...",
         flush=True,
     )
     await client.run_until_disconnected()
