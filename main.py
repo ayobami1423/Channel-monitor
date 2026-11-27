@@ -33,21 +33,22 @@ SESSION_STRING = os.environ.get(
 )
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "5821223676:AAFNcEr4xSk6Iv1TPFfPcqOUfFsYKhB8-NA")
-CHAT_ID = os.environ.get("CHAT_ID", "6677697222")
 
-# Your 10 target channels
-CHANNELS = [
-    -1003955016580,
-    -1004323860533,
-    -1003749032282,
-    -1004429521400,
-    -1003984618284,
-    -1004473788210,
-    -1003511130962,
-    -1004430225885,
-    -1003980795890,
-    -1003840464649,
-]
+# Map each of the 10 monitored channels to its own destination channel ID
+CHANNEL_MAP = {
+    -1003955016580: -1004317753374,
+    -1004323860533: -1004495186035,
+    -1003749032282: -1004303677627,
+    -1003984618284: -1003921471236,
+    -1004429521400: -1004380446358,
+    -1004473788210: -1004450370683,
+    -1003511130962: -1004343879029,
+    -1004430225885: -1004474148064,
+    -1003980795890: -1004337452147,
+    -1003840464649: -1003924342182,
+}
+
+SOURCE_CHANNELS = list(CHANNEL_MAP.keys())
 
 PREPARING_BLOCK = """🚨 ATTENTION! SIGNAL PREPARING 🚨
 
@@ -102,11 +103,11 @@ def build_message_link(chat, message_id: int) -> str:
     return f"https://t.me/c/{clean_id}/{message_id}"
 
 
-async def send_bot_notification(text: str):
-    """Sends the formatted alert to your private chat via your Telegram Bot"""
+async def send_bot_notification(target_chat_id: int, text: str):
+    """Sends the formatted reset alert to that source channel's mapped destination channel."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID,
+        "chat_id": target_chat_id,
         "text": text,
         "disable_web_page_preview": True,
     }
@@ -115,10 +116,13 @@ async def send_bot_notification(text: str):
             resp = await http_client.post(url, json=payload)
             resp.raise_for_status()
         except Exception as e:
-            print(f"Failed to send bot notification: {e}", flush=True)
+            print(
+                f"Failed to send bot notification to {target_chat_id}: {e}",
+                flush=True,
+            )
 
 
-@client.on(events.NewMessage(chats=CHANNELS))
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
 async def handle_message(event):
     message_text = (event.raw_text or "").strip()
     msg_type = classify_message(message_text)
@@ -130,6 +134,7 @@ async def handle_message(event):
     chat = await event.get_chat()
     chat_id = chat.id
     chat_title = getattr(chat, "title", str(chat_id))
+    dest_chat_id = CHANNEL_MAP.get(chat_id)
     msg_link = build_message_link(chat, event.id)
     now_wat = datetime.now(WAT_TZ).strftime("%I:%M %p")
     state = get_channel_state(chat_id)
@@ -146,18 +151,10 @@ async def handle_message(event):
         if state["pending_preparing"]:
             state["streak"] += 1
             state["pending_preparing"] = False
-            prep_link = state["last_preparing_link"]
-            current_streak = state["streak"]
-
-            alert_text = (
-                f"🔥 CONFIRMED STREAK: {current_streak} 🔥\n"
-                f"Channel: {chat_title}\n"
-                f"Time: {now_wat} WAT\n"
-                f"🔗 Preparing Link: {prep_link}\n"
-                f"🔗 Confirmed Link: {msg_link}"
+            print(
+                f"[{chat_title}] SIGNAL CONFIRMED -> Streak is now {state['streak']} (no alert sent)",
+                flush=True,
             )
-            print(alert_text, flush=True)
-            await send_bot_notification(alert_text)
 
     elif msg_type == "cancelled":
         if state["pending_preparing"] or state["streak"] > 0:
@@ -167,16 +164,17 @@ async def handle_message(event):
             state["pending_preparing"] = False
             state["last_preparing_link"] = None
 
-            alert_text = (
-                f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
-                f"Channel: {chat_title}\n"
-                f"Time: {now_wat} WAT\n"
-                f"Previous Streak: {prev_streak} → 0\n"
-                f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
-                f"🔗 Cancelled Link: {msg_link}"
-            )
-            print(alert_text, flush=True)
-            await send_bot_notification(alert_text)
+            if dest_chat_id is not None:
+                alert_text = (
+                    f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
+                    f"Channel: {chat_title}\n"
+                    f"Time: {now_wat} WAT\n"
+                    f"Previous Streak: {prev_streak} → 0\n"
+                    f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
+                    f"🔗 Cancelled Link: {msg_link}"
+                )
+                print(alert_text, flush=True)
+                await send_bot_notification(dest_chat_id, alert_text)
 
 
 async def main():
@@ -187,7 +185,7 @@ async def main():
             "SESSION_STRING is invalid or expired. Generate a new StringSession and redeploy."
         )
     print(
-        "Userbot authorized: tracking PREPARING → CONFIRMED streaks and CANCELLED resets (WAT)...",
+        "Userbot authorized: tracking streaks silently and routing reset alerts per channel (WAT)...",
         flush=True,
     )
     await client.run_until_disconnected()
