@@ -115,6 +115,7 @@ async def send_bot_notification(target_chat_id: int, text: str):
         try:
             resp = await http_client.post(url, json=payload)
             resp.raise_for_status()
+            print(f"Sent reset alert to destination {target_chat_id}", flush=True)
         except Exception as e:
             print(
                 f"Failed to send bot notification to {target_chat_id}: {e}",
@@ -122,7 +123,7 @@ async def send_bot_notification(target_chat_id: int, text: str):
             )
 
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+@client.on(events.NewMessage(chats=SOURCE_CHANNELS, incoming=None))
 async def handle_message(event):
     message_text = (event.raw_text or "").strip()
     msg_type = classify_message(message_text)
@@ -132,7 +133,7 @@ async def handle_message(event):
         return
 
     chat = await event.get_chat()
-    chat_id = chat.id
+    chat_id = event.chat_id
     chat_title = getattr(chat, "title", str(chat_id))
     dest_chat_id = CHANNEL_MAP.get(chat_id)
     msg_link = build_message_link(chat, event.id)
@@ -143,7 +144,7 @@ async def handle_message(event):
         state["pending_preparing"] = True
         state["last_preparing_link"] = msg_link
         print(
-            f"[{chat_title}] SIGNAL PREPARING recorded (Current Streak: {state['streak']})",
+            f"[{chat_title} | {chat_id}] SIGNAL PREPARING recorded (Current Streak: {state['streak']})",
             flush=True,
         )
 
@@ -152,29 +153,33 @@ async def handle_message(event):
             state["streak"] += 1
             state["pending_preparing"] = False
             print(
-                f"[{chat_title}] SIGNAL CONFIRMED -> Streak is now {state['streak']} (no alert sent)",
+                f"[{chat_title} | {chat_id}] SIGNAL CONFIRMED -> Streak is now {state['streak']} (no alert sent)",
                 flush=True,
             )
 
     elif msg_type == "cancelled":
-        if state["pending_preparing"] or state["streak"] > 0:
-            prev_streak = state["streak"]
-            prep_link = state["last_preparing_link"]
-            state["streak"] = 0
-            state["pending_preparing"] = False
-            state["last_preparing_link"] = None
+        prev_streak = state["streak"]
+        prep_link = state["last_preparing_link"]
+        state["streak"] = 0
+        state["pending_preparing"] = False
+        state["last_preparing_link"] = None
 
-            if dest_chat_id is not None:
-                alert_text = (
-                    f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
-                    f"Channel: {chat_title}\n"
-                    f"Time: {now_wat} WAT\n"
-                    f"Previous Streak: {prev_streak} → 0\n"
-                    f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
-                    f"🔗 Cancelled Link: {msg_link}"
-                )
-                print(alert_text, flush=True)
-                await send_bot_notification(dest_chat_id, alert_text)
+        if dest_chat_id is not None:
+            alert_text = (
+                f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
+                f"Channel: {chat_title}\n"
+                f"Time: {now_wat} WAT\n"
+                f"Previous Streak: {prev_streak} → 0\n"
+                f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
+                f"🔗 Cancelled Link: {msg_link}"
+            )
+            print(alert_text, flush=True)
+            await send_bot_notification(dest_chat_id, alert_text)
+        else:
+            print(
+                f"[{chat_title} | {chat_id}] CANCELLED seen, but chat_id not found in CHANNEL_MAP",
+                flush=True,
+            )
 
 
 async def main():
