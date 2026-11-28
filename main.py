@@ -34,6 +34,13 @@ SESSION_STRING = os.environ.get(
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "5821223676:AAFNcEr4xSk6Iv1TPFfPcqOUfFsYKhB8-NA")
 
+# Minimum streak before cancellation that counts as a "high streak"
+MIN_ALERT_STREAK = int(os.environ.get("MIN_ALERT_STREAK", "3"))
+
+# Numeric chat ID for back-to-back high-streak cancellation alerts
+_raw_alert_chat_id = os.environ.get("ALERT_CHAT_ID", "6677697222").strip()
+ALERT_CHAT_ID = int(_raw_alert_chat_id) if _raw_alert_chat_id else 6677697222
+
 # Map each of the 10 monitored channels to its own destination channel ID
 CHANNEL_MAP = {
     -1003955016580: -1004317753374,
@@ -69,7 +76,12 @@ CONFIRMED_FOOTER = "⚠️ MAXIMUM 5 MARTINGALES"
 WAT_TZ = timezone(timedelta(hours=1))  # Nigeria time (UTC+1)
 
 # Per-channel state:
-# {"streak": int, "pending_preparing": bool, "last_preparing_link": str | None}
+# {
+#   "streak": int,
+#   "pending_preparing": bool,
+#   "last_preparing_link": str | None,
+#   "prev_high_cancel_streak": int | None,
+# }
 channel_states = {}
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
@@ -81,6 +93,7 @@ def get_channel_state(chat_id: int) -> dict:
             "streak": 0,
             "pending_preparing": False,
             "last_preparing_link": None,
+            "prev_high_cancel_streak": None,
         }
     return channel_states[chat_id]
 
@@ -103,8 +116,8 @@ def build_message_link(chat, message_id: int) -> str:
     return f"https://t.me/c/{clean_id}/{message_id}"
 
 
-async def send_bot_notification(target_chat_id: int, text: str):
-    """Sends the formatted reset alert to that source channel's mapped destination channel."""
+async def send_bot_notification(target_chat_id: int, text: str, label: str = "reset alert"):
+    """Sends a formatted notification via the bot to target_chat_id."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": target_chat_id,
@@ -115,10 +128,10 @@ async def send_bot_notification(target_chat_id: int, text: str):
         try:
             resp = await http_client.post(url, json=payload)
             resp.raise_for_status()
-            print(f"Sent reset alert to destination {target_chat_id}", flush=True)
+            print(f"Sent {label} to destination {target_chat_id}", flush=True)
         except Exception as e:
             print(
-                f"Failed to send bot notification to {target_chat_id}: {e}",
+                f"Failed to send {label} to {target_chat_id}: {e}",
                 flush=True,
             )
 
@@ -164,22 +177,46 @@ async def handle_message(event):
         state["pending_preparing"] = False
         state["last_preparing_link"] = None
 
+        base_alert = (
+            f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
+            f"Channel: {chat_title}\n"
+            f"Time: {now_wat} WAT\n"
+            f"Previous Streak: {prev_streak} → 0\n"
+            f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
+            f"🔗 Cancelled Link: {msg_link}"
+        )
+
         if dest_chat_id is not None:
-            alert_text = (
-                f"🛑 SIGNAL CANCELLED — STREAK RESET TO 0 🛑\n"
-                f"Channel: {chat_title}\n"
-                f"Time: {now_wat} WAT\n"
-                f"Previous Streak: {prev_streak} → 0\n"
-                f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
-                f"🔗 Cancelled Link: {msg_link}"
-            )
-            print(alert_text, flush=True)
-            await send_bot_notification(dest_chat_id, alert_text)
+            print(base_alert, flush=True)
+            await send_bot_notification(dest_chat_id, base_alert, label="reset alert")
         else:
             print(
                 f"[{chat_title} | {chat_id}] CANCELLED seen, but chat_id not found in CHANNEL_MAP",
                 flush=True,
             )
+
+        prior_high = state["prev_high_cancel_streak"]
+        if prev_streak >= MIN_ALERT_STREAK:
+            if prior_high is not None:
+                combo_alert = (
+                    f"🚨 BACK-TO-BACK HIGH STREAK CANCELLED (2x IN A ROW) 🚨\n"
+                    f"Channel: {chat_title}\n"
+                    f"Time: {now_wat} WAT\n"
+                    f"Previous Streak: {prev_streak} → 0 (Prior High Cancel: {prior_high})\n"
+                    f"🔗 Preparing Link: {prep_link or 'N/A'}\n"
+                    f"🔗 Cancelled Link: {msg_link}"
+                )
+                print(combo_alert, flush=True)
+                await send_bot_notification(
+                    ALERT_CHAT_ID,
+                    combo_alert,
+                    label=f"back-to-back high-streak ({prior_high} & {prev_streak}) alert",
+                )
+                state["prev_high_cancel_streak"] = None
+            else:
+                state["prev_high_cancel_streak"] = prev_streak
+        else:
+            state["prev_high_cancel_streak"] = None
 
 
 async def main():
